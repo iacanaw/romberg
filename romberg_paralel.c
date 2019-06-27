@@ -1,21 +1,23 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <pthread.h>
 
 #define MAX_STEPS 11
-#define NTHREADS (int)floor((MAX_STEPS+1)/2)
+#define NTHREADS 6//(int)floor((MAX_STEPS+1)/2)
 #define LIM_INF 0.001
 #define LIM_SUP 10.001
 
-double R[MAX_STEPS][MAX_STEPS];
-double h = (LIM_SUP-LIM_INF); // step size
+typedef struct{
+    int row;
+    int collum;
+    double limInf;
+} thread_args;
 
-void *my_thread(void *x){
-    int t_id;
-    t_id = *((int *) x);
-    printf("Thread %i inicializada!\n", t_id);
-    return NULL;
-}
+thread_args args[NTHREADS];
+double R[MAX_STEPS][MAX_STEPS];
+double h[MAX_STEPS]; // step size
+
 
 void dump_row(size_t i, double *R){
    printf("R[%li] = ", i);
@@ -71,56 +73,116 @@ double romberg(double (*f/* function to integrate */)(double), double /*lower li
    return Rp[max_steps-1]; //return our best guess
 }
 
-double romberg_paralel(){
+void *romberg_collumZero(void *x){
+    double c = 0.;
+    double a;
+    int row, collum, i, j, limInf;
+    int id;
+    id = *(int *)x;
+    //printf("thread id: %d\n", id);
+    
+    row = args[id].row;
+    collum = args[id].collum;
+    limInf = args[id].limInf;
+    //printf("R[%d][%d]\n", row, collum);
+
+    size_t ep = 1 << (row-1); //2^(n-1)
+    for(size_t j = 1; j <= ep; ++j){
+        c += function(LIM_INF+(2*j-1)*h[row]);
+    }
+
+    R[row][collum] = h[row]*c + .5*R[row-1][collum];
+    printf("R[%d][%d] = %f\n", row, collum,R[row][collum]);
+    return NULL;
+}
+
+void *romberg_collumN(void *x){
+    int row, collum, j;
+    double n_k;
+    int id;
+    id = *(int *)x;
+
+    row = args[id].row;
+    collum = args[id].collum;
+    //printf("R[%d][%d]\n", row, collum);
+
+    n_k = pow(4, collum);
+    R[row][collum] = (n_k*R[row][collum-1] - R[row-1][collum-1])/(n_k-1); //compute R(i,j)
+    printf("R[%d][%d] = %f\n", row, collum,R[row][collum]);
+    return NULL;
+}
+
+double romberg_paralel(double (*f )(double), double limInf, double limSup, size_t max_steps){
     pthread_t threads[NTHREADS];
-    int thread_args[NTHREADS];
-    int rc, idx, i, j, n_col;
+    int tidx[NTHREADS];
+    int rc, i, j, k, thread_idx;
     double result;
-    int index[MAX_STEPS];
+    int index[max_steps];
+    for(i = 0; i< NTHREADS; i++){
+        args[i].limInf = LIM_INF;
+    }
 
+    // Inicia o controle (index) e preenche os H's
     j = 1;
-
-    for(i=0; i<MAX_STEPS; i++){
+    h[0] = (limSup - limInf);
+    for(i=0; i<max_steps; i++){
         index[i] = j;
-        printf("index[%d] = %d\n", i, index[i]);
+        //preenche os H's
+        if (i > 0){h[i] = h[i-1]/2.0;} 
         j--;
     }
 
     // Calcula o primeiro elemento
-    R[0][0] = (function(LIM_INF) + function(LIM_SUP))*h*.5;
+    R[0][0] = (function(limInf) + function(limSup))*h[0]*.5;
+    printf("R[%d][%d] = %f\n", 0, 0,R[0][0]);
+
 
     // Calcula os elementos
-    for(i=0; i<=MAX_STEPS*2; i++){
-        // perorrer os indexs
-        printf("\n\ninteracao %d\n", i+1);
-        for(j=0; j<MAX_STEPS; j++){
+    for(i=0; i<(max_steps-1)*2; i++){
+        // percorrer os indexs
+        printf("\n\ninteracaoa %d\n", i);
+        for(j=0; j<max_steps; j++){
+            thread_idx = 0;
             if(index[j]==0){
+                args[thread_idx].row = j;
+                args[thread_idx].collum = index[j];
+                tidx[thread_idx] = thread_idx;
+                pthread_create(&threads[thread_idx], NULL, romberg_collumZero, &tidx[thread_idx]);
+                pthread_join(threads[thread_idx], NULL);
+                thread_idx++;
                 //calcula R[j][index[j]];
-                printf("R[%d][%d]\n", j, index[j]);
                 index[j]++;
             }
             else if(index[j]<=j){
                 if (index[j]>0){
+                    args[thread_idx].row = j;
+                    args[thread_idx].collum = index[j];
+                    tidx[thread_idx] = thread_idx;
+                    pthread_create(&threads[thread_idx], NULL, romberg_collumN, &tidx[thread_idx]);
+                    pthread_join(threads[thread_idx], NULL);
+                    thread_idx++;
                     //calcula R[j][index[j]];
-                    printf("R[%d][%d]\n", j, index[j]);
                 }
                 index[j]++;
             }
             else if(index[j] < 0){
                 index[j]++;
             }
+            /*/for(k=0; k<NTHREADS; k++){
+                pthread_join(threads[k], NULL);
+            }*/
         }
     }
-
+    result = R[MAX_STEPS-1][MAX_STEPS-1];
     return result;
 }
 
 int main(int argc, char *argv[]){
     double resultado1, resultado2;
 
-    resultado1 = romberg(function, 0.01, 50, 11, 0.00001);
+    resultado1 = romberg(function, LIM_INF, LIM_SUP, 11, 0.00001);
     printf("resultado simples: %f\n",resultado1);
-    resultado2 = romberg_paralel();
+    resultado2 = romberg_paralel(function, LIM_INF, LIM_SUP, MAX_STEPS);
     printf("resultado paralelo: %f\n",resultado2);
     return 1;
 }

@@ -3,10 +3,11 @@
 #include <math.h>
 #include <pthread.h>
 
-#define MAX_STEPS 11
-#define NTHREADS 6//(int)floor((MAX_STEPS+1)/2)
+#define MAX_STEPS 10
+#define NTHREADS 5//(int)floor((MAX_STEPS+1)/2)
 #define LIM_INF 0.001
 #define LIM_SUP 10.001
+#define ACCURACY 0.0001 // 1E-8
 
 typedef struct{
     int row;
@@ -42,7 +43,7 @@ double romberg(double (*f/* function to integrate */)(double), double /*lower li
    double h = (b-a); //step size
    Rp[0] = (f(a) + f(b))*h*.5; //first trapezoidal step
 
-   dump_row(0, Rp);
+   //dump_row(0, Rp);
 
    for(size_t i = 1; i < max_steps; ++i){
       h /= 2.;
@@ -61,7 +62,7 @@ double romberg(double (*f/* function to integrate */)(double), double /*lower li
       //Dump ith column of R, R[i,i] is the best estimate so far
       dump_row(i, Rc);
 
-      /* if(i > 1 && fabs(Rp[i-1]-Rc[i]) < acc){
+     /* if(i > 1 && fabs(Rp[i-1]-Rc[i]) < ACCURACY){
          return Rc[i-1];
       }*/
 
@@ -92,7 +93,7 @@ void *romberg_collumZero(void *x){
     }
 
     R[row][collum] = h[row]*c + .5*R[row-1][collum];
-    printf("R[%d][%d] = %f\n", row, collum,R[row][collum]);
+    //printf("R[%d][%d] = %f\n", row, collum,R[row][collum]);
     return NULL;
 }
 
@@ -108,7 +109,12 @@ void *romberg_collumN(void *x){
 
     n_k = pow(4, collum);
     R[row][collum] = (n_k*R[row][collum-1] - R[row-1][collum-1])/(n_k-1); //compute R(i,j)
-    printf("R[%d][%d] = %f\n", row, collum,R[row][collum]);
+    //printf("R[%d][%d] = %f\n", row, collum,R[row][collum]);
+    return NULL;
+}
+
+void *doNothing(void *x){
+    //printf("");
     return NULL;
 }
 
@@ -116,7 +122,7 @@ double romberg_paralel(double (*f )(double), double limInf, double limSup, size_
     pthread_t threads[NTHREADS];
     int tidx[NTHREADS];
     int rc, i, j, k, thread_idx;
-    double result;
+    double result, erro;
     int index[max_steps];
     for(i = 0; i< NTHREADS; i++){
         args[i].limInf = LIM_INF;
@@ -134,13 +140,13 @@ double romberg_paralel(double (*f )(double), double limInf, double limSup, size_
 
     // Calcula o primeiro elemento
     R[0][0] = (function(limInf) + function(limSup))*h[0]*.5;
-    printf("R[%d][%d] = %f\n", 0, 0,R[0][0]);
+    //printf("R[%d][%d] = %f\n", 0, 0,R[0][0]);
 
 
     // Calcula os elementos
     for(i=0; i<(max_steps-1)*2; i++){
         // percorrer os indexs
-        printf("\n\ninteracaoa %d\n", i);
+        //printf("\n\ninteracaoa %d\n", i);
         for(j=0; j<max_steps; j++){
             thread_idx = 0;
             if(index[j]==0){
@@ -148,7 +154,7 @@ double romberg_paralel(double (*f )(double), double limInf, double limSup, size_
                 args[thread_idx].collum = index[j];
                 tidx[thread_idx] = thread_idx;
                 pthread_create(&threads[thread_idx], NULL, romberg_collumZero, &tidx[thread_idx]);
-                pthread_join(threads[thread_idx], NULL);
+                //pthread_join(threads[thread_idx], NULL);
                 thread_idx++;
                 //calcula R[j][index[j]];
                 index[j]++;
@@ -159,18 +165,33 @@ double romberg_paralel(double (*f )(double), double limInf, double limSup, size_
                     args[thread_idx].collum = index[j];
                     tidx[thread_idx] = thread_idx;
                     pthread_create(&threads[thread_idx], NULL, romberg_collumN, &tidx[thread_idx]);
-                    pthread_join(threads[thread_idx], NULL);
+                    //pthread_join(threads[thread_idx], NULL);
                     thread_idx++;
                     //calcula R[j][index[j]];
+
+                    // Critério de parada
+                    
+                    /*if(j == index[j] && j>1){
+                        printf("Calculando erro!\n");
+                        erro = fabs((R[j-1][index[j]-1])-(R[j][index[j]]));
+                        if(erro < ACCURACY){
+                            printf("~~~~Parou em R[%d][%d]\n",j, index[j]);
+                            return R[j][index[j]];
+                        }
+                    }*/
                 }
                 index[j]++;
             }
             else if(index[j] < 0){
                 index[j]++;
             }
-            /*/for(k=0; k<NTHREADS; k++){
+	    while(thread_idx < NTHREADS){
+            pthread_create(&threads[thread_idx], NULL, doNothing, &tidx[thread_idx]);
+            thread_idx++;
+	    }
+            for(k=0; k<NTHREADS; k++){
                 pthread_join(threads[k], NULL);
-            }*/
+            }
         }
     }
     result = R[MAX_STEPS-1][MAX_STEPS-1];
@@ -179,10 +200,26 @@ double romberg_paralel(double (*f )(double), double limInf, double limSup, size_
 
 int main(int argc, char *argv[]){
     double resultado1, resultado2;
+    time_t seconds1, seconds2, seconds3;
+    clock_t CPU_time_1, CPU_time_2, CPU_time_3, CPU_time_4;
 
-    resultado1 = romberg(function, LIM_INF, LIM_SUP, 11, 0.00001);
-    printf("resultado simples: %f\n",resultado1);
+    // Execução Sequencial
+    seconds1 = time(NULL);
+    CPU_time_1 = clock();
+    resultado1 = romberg(function, LIM_INF, LIM_SUP, MAX_STEPS, 0.00001);
+    CPU_time_2 = clock();
+    // Execucao Paralela
+    seconds2 = time(NULL);
+    CPU_time_3 = clock();
     resultado2 = romberg_paralel(function, LIM_INF, LIM_SUP, MAX_STEPS);
+    seconds3 = time(NULL);
+    CPU_time_4 = clock();
+
+    // Mostra resutados
     printf("resultado paralelo: %f\n",resultado2);
+    printf("resultado simples: %f\n",resultado1);
+    printf("Tempo total seq: %ld -- tempo total para: %ld\n", seconds2 - seconds1, seconds3 - seconds2);
+    printf("Clocks seq: %ld -- Clocks para: %ld\n", CPU_time_2 - CPU_time_1, CPU_time_4 - CPU_time_3);
+    printf("Ganho: %f", -1.0*((((float)CPU_time_4 - (float)CPU_time_3) * 100.0) / ((float)CPU_time_2 - (float)CPU_time_1)-100.0));
     return 1;
 }
